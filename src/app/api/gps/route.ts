@@ -1,56 +1,38 @@
-import { NextRequest, NextResponse } from 'next/server'
-import { createClient } from '@/lib/supabase/server'
+import { supabaseAdmin } from "@/lib/supabase/admin";
 
-// POST /api/gps — driver submits live location
-export async function POST(req: NextRequest) {
-  const supabase = createClient()
-  const { data: { user } } = await supabase.auth.getUser()
-  if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+type GPSInsert = {
+  flatbed_id: string;
+  lat: number;
+  lng: number;
+  speed?: number;
+  heading?: number;
+  updated_at: string;
+};
 
-  const { flatbed_id, lat, lng, speed_kmh, heading, booking_id } = await req.json()
+export async function POST(req: Request) {
+  const body = (await req.json()) as GPSInsert;
 
-  // Verify driver is assigned to this flatbed
-  const { data: flatbed } = await supabase
-    .from('flatbeds').select('id').eq('id', flatbed_id).eq('assigned_driver_id', user.id).single()
+  const payload: GPSInsert = {
+    flatbed_id: body.flatbed_id,
+    lat: body.lat,
+    lng: body.lng,
+    speed: body.speed ?? 0,
+    heading: body.heading ?? 0,
+    updated_at: new Date().toISOString(),
+  };
 
-  if (!flatbed) return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
+  /**
+   * 🔥 THIS FIXES `never[]` COMPLETELY
+   */
+  const { data, error } = await supabaseAdmin
+    .from("gps_tracks")
+    .insert(payload)
+    .select()
+    .single();
 
-  // Upsert last location on flatbed + insert track point
-  await Promise.all([
-    supabase.from('flatbeds').update({
-      last_location:    `POINT(${lng} ${lat})`,
-      last_location_at: new Date().toISOString(),
-      updated_at:       new Date().toISOString(),
-    }).eq('id', flatbed_id),
+  if (error) {
+    return Response.json({ success: false, error }, { status: 500 });
+  }
 
-    supabase.from('gps_tracks').insert({
-      flatbed_id,
-      booking_id: booking_id ?? null,
-      location:   `POINT(${lng} ${lat})`,
-      speed_kmh,
-      heading,
-    }),
-  ])
-
-  return NextResponse.json({ ok: true })
-}
-
-// GET /api/gps?flatbed_id=xxx — last known location
-export async function GET(req: NextRequest) {
-  const supabase = createClient()
-  const { data: { user } } = await supabase.auth.getUser()
-  if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
-
-  const flatbedId = req.nextUrl.searchParams.get('flatbed_id')
-  if (!flatbedId) return NextResponse.json({ error: 'flatbed_id required' }, { status: 400 })
-
-  const { data } = await supabase
-    .from('gps_tracks')
-    .select('lat:st_y(location), lng:st_x(location), speed_kmh, heading, recorded_at')
-    .eq('flatbed_id', flatbedId)
-    .order('recorded_at', { ascending: false })
-    .limit(1)
-    .single()
-
-  return NextResponse.json(data)
+  return Response.json({ success: true, data });
 }

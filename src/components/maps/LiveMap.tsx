@@ -1,32 +1,38 @@
-'use client'
+"use client";
 
-import { useEffect, useRef, useCallback } from 'react'
-import type { LiveLocation } from '@/types'
+import type { LiveLocation } from "@/types";
+import { useEffect, useRef } from "react";
 
 interface Props {
-  pickupLat?: number
-  pickupLng?: number
-  dropoffLat?: number
-  dropoffLng?: number
-  truckLocations?: LiveLocation[]
-  interactive?: boolean
-  onPickupSelect?: (lat: number, lng: number, address: string) => void
+  pickupLat?: number;
+  pickupLng?: number;
+  dropoffLat?: number;
+  dropoffLng?: number;
+  truckLocations?: LiveLocation[];
+  interactive?: boolean;
+  onPickupSelect?: (lat: number, lng: number, address: string) => void;
 }
 
 export default function LiveMap({
-  pickupLat, pickupLng, dropoffLat, dropoffLng,
-  truckLocations = [], interactive = false, onPickupSelect,
+  pickupLat,
+  pickupLng,
+  dropoffLat,
+  dropoffLng,
+  truckLocations = [],
+  interactive = false,
+  onPickupSelect,
 }: Props) {
-  const mapContainer = useRef<HTMLDivElement>(null)
-  const mapRef       = useRef<any>(null)
-  const markersRef   = useRef<Map<string, any>>(new Map())
+  const mapContainer = useRef<HTMLDivElement | null>(null);
+  const mapRef = useRef<any>(null);
+  const markersRef = useRef<Map<string, any>>(new Map());
 
   useEffect(() => {
-    if (!mapContainer.current || mapRef.current) return
+    if (!mapContainer.current || mapRef.current) return;
 
-    // Dynamic import to avoid SSR issues
-    import('maplibre-gl').then(({ default: maplibregl }) => {
-      import('maplibre-gl/dist/maplibre-gl.css')
+    let cancelled = false;
+
+    import("maplibre-gl").then(({ default: maplibregl }) => {
+      if (cancelled) return;
 
       const map = new maplibregl.Map({
         container: mapContainer.current!,
@@ -34,89 +40,100 @@ export default function LiveMap({
           version: 8,
           sources: {
             osm: {
-              type: 'raster',
-              tiles: ['https://tile.openstreetmap.org/{z}/{x}/{y}.png'],
+              type: "raster",
+              tiles: ["https://tile.openstreetmap.org/{z}/{x}/{y}.png"],
               tileSize: 256,
-              attribution: '© OpenStreetMap contributors',
+              attribution: "© OpenStreetMap contributors",
             },
           },
-          layers: [{ id: 'osm', type: 'raster', source: 'osm' }],
+          layers: [
+            {
+              id: "osm",
+              type: "raster",
+              source: "osm",
+            },
+          ],
         },
-        center: [pickupLng ?? 36.8219, pickupLat ?? -1.2921], // Default: Nairobi
+        center: [pickupLng ?? 36.8219, pickupLat ?? -1.2921],
         zoom: 12,
-      })
+      });
 
-      map.addControl(new maplibregl.NavigationControl(), 'top-right')
+      map.addControl(new maplibregl.NavigationControl(), "top-right");
 
       if (interactive && onPickupSelect) {
-        map.on('click', async (e) => {
-          const { lng, lat } = e.lngLat
-          // Reverse geocode via Nominatim (free, no API key)
-          const res = await fetch(
-            `https://nominatim.openstreetmap.org/reverse?lat=${lat}&lon=${lng}&format=json`
-          )
-          const data = await res.json()
-          onPickupSelect(lat, lng, data.display_name ?? `${lat.toFixed(4)}, ${lng.toFixed(4)}`)
-        })
-        map.getCanvas().style.cursor = 'crosshair'
+        map.on("click", async (e: any) => {
+          const { lng, lat } = e.lngLat;
+
+          try {
+            const res = await fetch(
+              `https://nominatim.openstreetmap.org/reverse?lat=${lat}&lon=${lng}&format=json`,
+            );
+            const data = await res.json();
+
+            onPickupSelect(
+              lat,
+              lng,
+              data?.display_name ?? `${lat.toFixed(4)}, ${lng.toFixed(4)}`,
+            );
+          } catch {
+            onPickupSelect(lat, lng, `${lat.toFixed(4)}, ${lng.toFixed(4)}`);
+          }
+        });
       }
 
-      mapRef.current = map
-    })
+      mapRef.current = map;
+    });
 
-    return () => { mapRef.current?.remove(); mapRef.current = null }
-  }, [])
+    return () => {
+      cancelled = true;
+      mapRef.current?.remove();
+      mapRef.current = null;
+      markersRef.current.clear();
+    };
+  }, []);
 
-  // Update pickup marker
   useEffect(() => {
-    if (!mapRef.current || !pickupLat || !pickupLng) return
-    import('maplibre-gl').then(({ default: maplibregl }) => {
-      markersRef.current.get('pickup')?.remove()
-      const el = document.createElement('div')
-      el.className = 'w-4 h-4 rounded-full bg-green-400 border-2 border-white shadow-lg'
+    if (!mapRef.current || pickupLat == null || pickupLng == null) return;
+
+    import("maplibre-gl").then(({ default: maplibregl }) => {
+      const el = document.createElement("div");
+      el.style.width = "14px";
+      el.style.height = "14px";
+      el.style.borderRadius = "50%";
+      el.style.background = "#22c55e";
+
       const marker = new maplibregl.Marker({ element: el })
         .setLngLat([pickupLng, pickupLat])
-        .addTo(mapRef.current)
-      markersRef.current.set('pickup', marker)
-      mapRef.current.flyTo({ center: [pickupLng, pickupLat], zoom: 13 })
-    })
-  }, [pickupLat, pickupLng])
+        .addTo(mapRef.current);
 
-  // Update dropoff marker
-  useEffect(() => {
-    if (!mapRef.current || !dropoffLat || !dropoffLng) return
-    import('maplibre-gl').then(({ default: maplibregl }) => {
-      markersRef.current.get('dropoff')?.remove()
-      const el = document.createElement('div')
-      el.className = 'w-4 h-4 rounded-full bg-red-400 border-2 border-white shadow-lg'
-      const marker = new maplibregl.Marker({ element: el })
-        .setLngLat([dropoffLng, dropoffLat])
-        .addTo(mapRef.current)
-      markersRef.current.set('dropoff', marker)
-    })
-  }, [dropoffLat, dropoffLng])
+      markersRef.current.set("pickup", marker);
+    });
+  }, [pickupLat, pickupLng]);
 
-  // Update truck markers
   useEffect(() => {
-    if (!mapRef.current) return
-    import('maplibre-gl').then(({ default: maplibregl }) => {
+    if (!mapRef.current) return;
+
+    import("maplibre-gl").then(({ default: maplibregl }) => {
       truckLocations.forEach((loc) => {
-        let marker = markersRef.current.get(`truck-${loc.flatbed_id}`)
-        if (!marker) {
-          const el = document.createElement('div')
-          el.innerHTML = `<div class="w-8 h-8 rounded-full bg-blue-500 border-2 border-white shadow-lg flex items-center justify-center text-xs">🚛</div>`
-          marker = new maplibregl.Marker({ element: el.firstChild as HTMLElement })
-            .setLngLat([loc.lng, loc.lat])
-            .addTo(mapRef.current)
-          markersRef.current.set(`truck-${loc.flatbed_id}`, marker)
-        } else {
-          marker.setLngLat([loc.lng, loc.lat])
-        }
-      })
-    })
-  }, [truckLocations])
+        const key = `truck-${loc.flatbed_id}`;
 
-  return (
-    <div ref={mapContainer} className="w-full h-full rounded-xl overflow-hidden" />
-  )
+        let marker = markersRef.current.get(key);
+
+        if (!marker) {
+          const el = document.createElement("div");
+          el.innerText = "🚛";
+
+          marker = new maplibregl.Marker({ element: el })
+            .setLngLat([loc.lng, loc.lat])
+            .addTo(mapRef.current);
+
+          markersRef.current.set(key, marker);
+        } else {
+          marker.setLngLat([loc.lng, loc.lat]);
+        }
+      });
+    });
+  }, [truckLocations]);
+
+  return <div ref={mapContainer} className="w-full h-full rounded-xl" />;
 }
