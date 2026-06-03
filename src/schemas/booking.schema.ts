@@ -1,131 +1,39 @@
 import { z } from "zod";
 
-/**
- * =========================================================
- * SAFE DRIVE SENTINEL — BOOKING SCHEMAS (PRODUCTION GRADE)
- * =========================================================
- */
+export const CreateBookingSchema = z.object({
+  service_type: z.enum([
+    "flatbed_tow",
+    "battery_jumpstart",
+    "fuel_delivery",
+    "tire_change",
+    "lockout",
+    "emergency_rescue",
+    "luxury_transport",
+    "cross_border",
+    "ev_recovery",
+    "car_relocation",
+  ]),
 
-/**
- * -------------------------------
- * SERVICE TYPES
- * -------------------------------
- */
-export const ServiceTypeEnum = z.enum([
-  "emergency_rescue",
-  "flatbed_tow",
-  "luxury_transport",
-  "cross_border",
-  "ev_recovery",
-  "car_relocation",
-  "fleet_transport",
-]);
+  pickup_lat: z.number(),
+  pickup_lng: z.number(),
+  pickup_address: z.string(),
 
-/**
- * -------------------------------
- * CORE REUSABLE VALIDATORS
- * -------------------------------
- */
+  dropoff_lat: z.number(),
+  dropoff_lng: z.number(),
+  dropoff_address: z.string(),
 
-const Lat = z.number().min(-90, "Invalid latitude").max(90, "Invalid latitude");
-const Lng = z.number().min(-180, "Invalid longitude").max(180, "Invalid longitude");
+  vehicle_description: z.string(),
+  special_notes: z.string().optional(),
 
-/**
- * Strict address sanitizer:
- * - trims whitespace
- * - removes empty strings
- */
-const Address = z
-  .string()
-  .trim()
-  .min(5, "Address too short")
-  .max(300, "Address too long");
+  distance_km: z.number().optional(),
+});
 
-/**
- * Optional clean text (NO empty strings allowed)
- */
-const OptionalText = (max: number) =>
-  z
-    .string()
-    .trim()
-    .max(max)
-    .optional()
-    .transform((val) => (val === "" ? undefined : val));
+export const CancelBookingSchema = z.object({
+  booking_id: z.string().uuid(),
+  reason: z.string().min(3),
+});
 
-/**
- * -------------------------------
- * CREATE BOOKING
- * -------------------------------
- */
-export const CreateBookingSchema = z
-  .object({
-    service_type: ServiceTypeEnum,
-
-    pickup_lat: Lat,
-    pickup_lng: Lng,
-    pickup_address: Address,
-
-    dropoff_lat: Lat,
-    dropoff_lng: Lng,
-    dropoff_address: Address,
-
-    vehicle_description: z
-      .string()
-      .trim()
-      .min(5, "Vehicle description required")
-      .max(500),
-
-    special_notes: OptionalText(1000),
-
-    /**
-     * IMPORTANT:
-     * distance is OPTIONAL because it can be computed server-side
-     * BUT must NEVER be negative
-     */
-    distance_km: z.number().positive().optional(),
-
-    /**
-     * Future-proofing for AI dispatch + fraud scoring + routing
-     */
-    metadata: z.record(z.any()).optional(),
-  })
-  .strict();
-
-/**
- * -------------------------------
- * CANCEL BOOKING
- * -------------------------------
- */
-export const CancelBookingSchema = z
-  .object({
-    booking_id: z.string().uuid("Invalid booking ID"),
-    reason: OptionalText(500),
-  })
-  .strict();
-
-/**
- * -------------------------------
- * QUOTE REQUEST
- * -------------------------------
- */
-export const QuoteSchema = z
-  .object({
-    service_type: ServiceTypeEnum,
-
-    /**
-     * Must be strictly positive for pricing engine stability
-     */
-    distance_km: z.number().positive("Distance must be greater than 0"),
-  })
-  .strict();
-
-/**
- * -------------------------------
- * TYPESCRIPT EXPORT TYPES
- * -------------------------------
- */
-export type ServiceType = z.infer<typeof ServiceTypeEnum>;
-
-export type CreateBookingInput = z.infer<typeof CreateBookingSchema>;
-export type CancelBookingInput = z.infer<typeof CancelBookingSchema>;
-export type QuoteInput = z.infer<typeof QuoteSchema>;
+export const QuoteSchema = z.object({
+  service_type: z.string(),
+  distance_km: z.number(),
+});

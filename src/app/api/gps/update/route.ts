@@ -1,4 +1,4 @@
-import { supabaseAdmin } from "@/lib/supabase";
+import { supabaseAdmin } from "@/lib/supabase/admin";
 import { NextRequest, NextResponse } from "next/server";
 
 type GPSPayload = {
@@ -22,9 +22,6 @@ export async function POST(req: NextRequest) {
       updated_at: new Date().toISOString(),
     };
 
-    /**
-     * 🔥 NOW TYPESCRIPT KNOWS TABLE SHAPE
-     */
     const { data, error } = await supabaseAdmin
       .from("gps_tracks")
       .insert(payload)
@@ -38,10 +35,7 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    return NextResponse.json({
-      success: true,
-      data,
-    });
+    return NextResponse.json({ success: true, data });
   } catch (err: any) {
     return NextResponse.json(
       { success: false, error: err.message },

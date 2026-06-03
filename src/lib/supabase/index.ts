@@ -1,6 +1,9 @@
-export { supabaseAdmin } from "./admin";
-export { createClient } from "./client";
-export { createServerClient } from "./server";
+import { createClient as createSupabaseClient } from "@supabase/supabase-js";
 
-export type { Database } from "@/types/database.types";
-
+/**
+ * Main Supabase browser/client instance
+ */
+export const supabase = createSupabaseClient(
+  process.env.NEXT_PUBLIC_SUPABASE_URL!,
+  process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
+);

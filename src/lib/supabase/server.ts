@@ -1,11 +1,16 @@
-import type { Database } from "@/types/database.types";
 import { createServerClient } from "@supabase/ssr";
 import { cookies } from "next/headers";
 
-export async function createServerSupabaseClient() {
-  const cookieStore = await cookies();
+type CookieValue = {
+  name: string;
+  value: string;
+  options?: Record<string, unknown>;
+};
 
-  return createServerClient<Database>(
+export function createClient() {
+  const cookieStore = cookies();
+
+  return createServerClient(
     process.env.NEXT_PUBLIC_SUPABASE_URL!,
     process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
     {
@@ -14,13 +19,13 @@ export async function createServerSupabaseClient() {
           return cookieStore.getAll();
         },
 
-        setAll(cookiesToSet) {
+        setAll(cookiesToSet: CookieValue[]) {
           try {
             cookiesToSet.forEach(({ name, value, options }) => {
               cookieStore.set(name, value, options);
             });
           } catch {
-            // ignored in server components
+            // Server-safe fallback (Next may throw in RSC)
           }
         },
       },

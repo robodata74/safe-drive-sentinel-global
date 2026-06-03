@@ -1,66 +1,68 @@
-// ─── Booking State Machine ────────────────────────────────
-// Enforces valid status transitions throughout the lifecycle
+import type { BookingStatus } from "@/types";
 
-export type BookingStatus =
-  | 'searching'   // customer submitted, looking for provider
-  | 'matched'     // PayPal captured, driver assigned
-  | 'accepted'    // driver confirmed job
-  | 'en_route'    // driver heading to pickup
-  | 'arrived'     // driver at pickup location
-  | 'loading'     // vehicle being loaded
-  | 'in_transit'  // vehicle in transport
-  | 'delivered'   // arrived at dropoff
-  | 'completed'   // customer confirmed, payment released
-  | 'cancelled'   // cancelled by either party
+export type Actor = "system" | "driver" | "customer" | "admin";
 
-// Valid transitions: from → allowed next states
-const TRANSITIONS: Record<BookingStatus, BookingStatus[]> = {
-  searching:  ['matched',   'cancelled'],
-  matched:    ['accepted',  'cancelled'],
-  accepted:   ['en_route',  'cancelled'],
-  en_route:   ['arrived',   'cancelled'],
-  arrived:    ['loading'],
-  loading:    ['in_transit'],
-  in_transit: ['delivered'],
-  delivered:  ['completed'],
-  completed:  [],
-  cancelled:  [],
-}
+type TransitionKey = `${BookingStatus}→${BookingStatus}`;
 
-// Who can trigger each transition
-const ACTOR: Record<string, 'system' | 'driver' | 'customer' | 'admin'> = {
-  'searching→matched':    'system',
-  'matched→accepted':     'driver',
-  'accepted→en_route':    'driver',
-  'en_route→arrived':     'driver',
-  'arrived→loading':      'driver',
-  'loading→in_transit':   'driver',
-  'in_transit→delivered': 'driver',
-  'delivered→completed':  'customer',
-  'searching→cancelled':  'customer',
-  'matched→cancelled':    'admin',
-  'accepted→cancelled':   'admin',
-}
+const TRANSITIONS: Readonly<Record<BookingStatus, BookingStatus[]>> = {
+  pending: ["matched", "cancelled"],
+
+  matched: ["in_progress", "cancelled"],
+
+  in_progress: ["completed", "cancelled"],
+
+  completed: [],
+
+  cancelled: [],
+};
+
+const ACTOR_MAP: Partial<Record<TransitionKey, Actor>> = {
+  "pending→matched": "system",
+
+  "matched→in_progress": "driver",
+
+  "in_progress→completed": "customer",
+
+  "pending→cancelled": "customer",
+
+  "matched→cancelled": "admin",
+
+  "in_progress→cancelled": "admin",
+};
 
 export function canTransition(from: BookingStatus, to: BookingStatus): boolean {
-  return TRANSITIONS[from]?.includes(to) ?? false
+  return TRANSITIONS[from]?.includes(to) ?? false;
 }
 
-export function getActor(from: BookingStatus, to: BookingStatus) {
-  return ACTOR[`${from}→${to}`] ?? 'admin'
+export function getActor(from: BookingStatus, to: BookingStatus): Actor {
+  return ACTOR_MAP[`${from}→${to}`] ?? "admin";
 }
 
 export function getNextStates(current: BookingStatus): BookingStatus[] {
-  return TRANSITIONS[current] ?? []
+  return TRANSITIONS[current] ?? [];
 }
 
 export function isFinalState(status: BookingStatus): boolean {
-  return status === 'completed' || status === 'cancelled'
+  return status === "completed" || status === "cancelled";
+}
+
+export function assertTransition(from: BookingStatus, to: BookingStatus): void {
+  if (!canTransition(from, to)) {
+    throw new BookingStateMachineError(from, to);
+  }
 }
 
 export class BookingStateMachineError extends Error {
+  readonly from: BookingStatus;
+
+  readonly to: BookingStatus;
+
   constructor(from: BookingStatus, to: BookingStatus) {
-    super(`Invalid transition: ${from} → ${to}`)
-    this.name = 'BookingStateMachineError'
+    super(`Invalid booking transition: ${from} → ${to}`);
+
+    this.name = "BookingStateMachineError";
+
+    this.from = from;
+    this.to = to;
   }
 }

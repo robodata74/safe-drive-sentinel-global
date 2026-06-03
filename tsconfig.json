@@ -1,59 +1,40 @@
 {
   "compilerOptions": {
-    /* ======================================================
-       CORE
-    ====================================================== */
     "target": "ES2022",
     "lib": ["DOM", "DOM.Iterable", "ES2022"],
 
-    /* ======================================================
-       NEXT.JS / MODULES
-    ====================================================== */
     "jsx": "preserve",
     "module": "ESNext",
     "moduleResolution": "Bundler",
+
     "resolveJsonModule": true,
     "isolatedModules": true,
 
-    /* ======================================================
-       TYPE SAFETY
-    ====================================================== */
     "strict": true,
     "noImplicitAny": true,
     "strictNullChecks": true,
     "forceConsistentCasingInFileNames": true,
 
-    /* ======================================================
-       BUILD
-    ====================================================== */
     "noEmit": true,
     "incremental": true,
     "skipLibCheck": true,
 
-    /* ======================================================
-       INTEROP
-    ====================================================== */
     "esModuleInterop": true,
     "allowSyntheticDefaultImports": true,
 
-    /* ======================================================
-       PATH ALIASES
-       (NO baseUrl — TS7 SAFE)
-    ====================================================== */
-    "paths": {
-      "@/*": ["./src/*"]
-    },
-
-    /* ======================================================
-       NEXT.JS PLUGIN
-    ====================================================== */
     "plugins": [
       {
         "name": "next"
       }
-    ]
-  },
+    ],
 
+    "allowJs": true,
+
+    // ✅ NEW (recommended replacement for baseUrl behavior)
+    "paths": {
+      "@/*": ["./src/*"]
+    }
+  },
   "include": [
     "next-env.d.ts",
     "**/*.ts",
@@ -61,6 +42,5 @@
     ".next/types/**/*.ts",
     "src/**/*.d.ts"
   ],
-
   "exclude": ["node_modules"]
 }

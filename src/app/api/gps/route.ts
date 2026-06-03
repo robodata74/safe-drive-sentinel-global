@@ -10,7 +10,7 @@ type GPSInsert = {
 };
 
 export async function POST(req: Request) {
-  const body = (await req.json()) as GPSInsert;
+  const body: GPSInsert = await req.json();
 
   const payload: GPSInsert = {
     flatbed_id: body.flatbed_id,
@@ -21,9 +21,6 @@ export async function POST(req: Request) {
     updated_at: new Date().toISOString(),
   };
 
-  /**
-   * 🔥 THIS FIXES `never[]` COMPLETELY
-   */
   const { data, error } = await supabaseAdmin
     .from("gps_tracks")
     .insert(payload)
@@ -31,7 +28,10 @@ export async function POST(req: Request) {
     .single();
 
   if (error) {
-    return Response.json({ success: false, error }, { status: 500 });
+    return Response.json(
+      { success: false, error: error.message },
+      { status: 500 },
+    );
   }
 
   return Response.json({ success: true, data });

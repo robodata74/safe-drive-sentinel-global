@@ -1,62 +1,73 @@
-import { NextRequest, NextResponse } from "next/server";
+import { calcFare } from "@/lib/utils";
 import { QuoteSchema } from "@/schemas/booking.schema";
-import { calcFare } from "@/lib/fare";
+import type { ServiceType } from "@/types";
+import { NextRequest, NextResponse } from "next/server";
+
+const VALID_SERVICES: ServiceType[] = [
+  "flatbed_tow",
+  "battery_jumpstart",
+  "fuel_delivery",
+  "tire_change",
+  "lockout",
+  "emergency_rescue",
+  "luxury_transport",
+  "cross_border",
+  "ev_recovery",
+  "car_relocation",
+];
+
+function isServiceType(value: string): value is ServiceType {
+  return VALID_SERVICES.includes(value as ServiceType);
+}
 
 export async function GET(req: NextRequest) {
   try {
     const { searchParams } = new URL(req.url);
 
-    const rawInput = {
-      service_type: searchParams.get("service_type"),
-      distance_km: searchParams.get("distance_km"),
-    };
+    const service_type = searchParams.get("service_type") ?? "";
+    const distance_km = Number(searchParams.get("distance_km"));
 
-    const input = {
-      service_type: rawInput.service_type,
-      distance_km: Number(rawInput.distance_km),
-    };
-
-    if (!Number.isFinite(input.distance_km)) {
+    if (!isServiceType(service_type)) {
       return NextResponse.json(
-        {
-          success: false,
-          message: "Invalid distance_km",
-        },
-        { status: 400 }
+        { error: "Invalid service_type" },
+        { status: 400 },
       );
     }
 
-    const parsed = QuoteSchema.safeParse(input);
+    if (!Number.isFinite(distance_km)) {
+      return NextResponse.json(
+        { error: "Invalid distance_km" },
+        { status: 400 },
+      );
+    }
+
+    const parsed = QuoteSchema.safeParse({
+      service_type,
+      distance_km,
+    });
 
     if (!parsed.success) {
       return NextResponse.json(
         {
-          success: false,
-          message: "Invalid quote request",
-          error: parsed.error.flatten(),
+          error: "Invalid quote request",
+          details: parsed.error.flatten(),
         },
-        { status: 400 }
+        { status: 400 },
       );
     }
 
-    const fare = calcFare(
-      parsed.data.service_type,
-      parsed.data.distance_km
-    );
+    const fare = calcFare(distance_km, service_type);
 
     return NextResponse.json({
       success: true,
       data: fare,
     });
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : "Unknown error";
 
-  } catch (error: any) {
     return NextResponse.json(
-      {
-        success: false,
-        message: "Internal server error",
-        error: error?.message || "Unknown error",
-      },
-      { status: 500 }
+      { success: false, error: message },
+      { status: 500 },
     );
   }
 }
