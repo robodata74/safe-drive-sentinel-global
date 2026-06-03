@@ -4,64 +4,56 @@ import { supabaseAdmin } from "@/lib/supabase/admin";
 import type { BookingStatus } from "@/types";
 import { NextRequest, NextResponse } from "next/server";
 
-type CapturePayload = {
+type CaptureRequestBody = {
   orderID: string;
   booking_id: string;
 };
 
 /**
  * Payment success → booking lifecycle state
- *
- * Customer has paid, booking becomes
- * dispatch-ready for provider matching.
  */
-const PAYMENT_SUCCESS_STATUS: BookingStatus = "matched";
+const PAYMENT_BOOKING_STATUS: BookingStatus = "matched";
 
 export async function POST(req: NextRequest) {
   try {
-    const body: CapturePayload = await req.json();
+    const body: CaptureRequestBody = await req.json();
 
     const { orderID, booking_id } = body;
 
-    /**
-     * Validate request
-     */
     if (!orderID || !booking_id) {
       return NextResponse.json(
         {
           success: false,
-          error: "Missing required fields: orderID, booking_id",
+          error: "Missing orderID or booking_id",
         },
         { status: 400 },
       );
     }
 
     /**
-     * 1. Capture PayPal order
+     * Capture PayPal payment
      */
     const capture = await capturePayPalOrder(orderID);
 
     const captureStatus =
-      capture?.purchase_units?.[0]?.payments?.captures?.[0]?.status ??
-      capture?.status;
+      capture?.purchase_units?.[0]?.payments?.captures?.[0]?.status;
 
     if (captureStatus !== "COMPLETED") {
       return NextResponse.json(
         {
           success: false,
-          error: "Payment capture not completed",
-          paypal_status: captureStatus ?? "UNKNOWN",
+          error: "Payment capture failed",
         },
         { status: 400 },
       );
     }
 
     /**
-     * 2. Get booking
+     * Fetch booking
      */
     const { data: booking, error: bookingError } = await supabaseAdmin
       .from("bookings")
-      .select("id, status, payment_status")
+      .select("id, status")
       .eq("id", booking_id)
       .single();
 
@@ -78,43 +70,25 @@ export async function POST(req: NextRequest) {
     const currentStatus = booking.status as BookingStatus;
 
     /**
-     * Prevent duplicate payment processing
+     * Validate transition
      */
-    if (booking.payment_status === "paid") {
-      return NextResponse.json({
-        success: true,
-        already_paid: true,
-        booking,
-      });
-    }
-
-    /**
-     * 3. Validate booking transition
-     *
-     * Example:
-     * pending → matched ✅
-     * cancelled → matched ❌
-     */
-    if (
-      currentStatus !== PAYMENT_SUCCESS_STATUS &&
-      !canTransition(currentStatus, PAYMENT_SUCCESS_STATUS)
-    ) {
+    if (!canTransition(currentStatus, PAYMENT_BOOKING_STATUS)) {
       return NextResponse.json(
         {
           success: false,
-          error: `Invalid booking transition: ${currentStatus} → ${PAYMENT_SUCCESS_STATUS}`,
+          error: `Invalid transition: ${currentStatus} → ${PAYMENT_BOOKING_STATUS}`,
         },
         { status: 409 },
       );
     }
 
     /**
-     * 4. Update booking
+     * Update booking
      */
     const { data: updatedBooking, error: updateError } = await supabaseAdmin
       .from("bookings")
       .update({
-        status: PAYMENT_SUCCESS_STATUS,
+        status: PAYMENT_BOOKING_STATUS,
         payment_status: "paid",
         paypal_order_id: orderID,
         paid_at: new Date().toISOString(),
@@ -134,16 +108,12 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    /**
-     * 5. Success response
-     */
     return NextResponse.json({
       success: true,
       booking: updatedBooking,
       payment_status: "paid",
-      transitioned_to: PAYMENT_SUCCESS_STATUS,
-      paypal_capture_id:
-        capture?.purchase_units?.[0]?.payments?.captures?.[0]?.id ?? null,
+      booking_status: PAYMENT_BOOKING_STATUS,
+      paypal_capture: capture,
     });
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : "Unknown server error";
