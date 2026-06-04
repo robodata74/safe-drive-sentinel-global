@@ -1,14 +1,21 @@
 import { createServerClient } from "@supabase/ssr";
 import { cookies } from "next/headers";
 
-type CookieValue = {
+type CookieToSet = {
   name: string;
   value: string;
-  options?: Record<string, unknown>;
+  options?: {
+    path?: string;
+    domain?: string;
+    maxAge?: number;
+    secure?: boolean;
+    httpOnly?: boolean;
+    sameSite?: "lax" | "strict" | "none";
+  };
 };
 
-export function createClient() {
-  const cookieStore = cookies();
+export async function createClient() {
+  const cookieStore = await cookies();
 
   return createServerClient(
     process.env.NEXT_PUBLIC_SUPABASE_URL!,
@@ -19,13 +26,13 @@ export function createClient() {
           return cookieStore.getAll();
         },
 
-        setAll(cookiesToSet: CookieValue[]) {
+        setAll(cookiesToSet: CookieToSet[]) {
           try {
-            cookiesToSet.forEach(({ name, value, options }) => {
+            cookiesToSet.forEach(({ name, value, options }: CookieToSet) => {
               cookieStore.set(name, value, options);
             });
           } catch {
-            // Server-safe fallback (Next may throw in RSC)
+            // Safe fallback for RSC
           }
         },
       },
