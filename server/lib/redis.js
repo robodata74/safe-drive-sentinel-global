@@ -1,17 +1,41 @@
-const { Redis } = require("@upstash/redis");
+const Redis = require("ioredis");
 
-const redis = new Redis({
-  url: process.env.REDIS_URL,
-  token: process.env.REDIS_TOKEN,
+// SINGLE CONNECTION (Production safe)
+const redis = new Redis(process.env.REDIS_URL, {
+  maxRetriesPerRequest: 3,
+  enableReadyCheck: true,
 });
 
+redis.on("connect", () => {
+  console.log("🟢 Redis connected");
+});
+
+redis.on("error", (err) => {
+  console.error("🔴 Redis error:", err.message);
+});
+
+/**
+ * SET VALUE (with TTL)
+ */
 async function setValue(key, value, ttlSeconds = 60) {
-  await redis.set(key, JSON.stringify(value), { ex: ttlSeconds });
+  try {
+    await redis.set(key, JSON.stringify(value), "EX", ttlSeconds);
+  } catch (err) {
+    console.error("Redis SET error:", err.message);
+  }
 }
 
+/**
+ * GET VALUE
+ */
 async function getValue(key) {
-  const data = await redis.get(key);
-  return data ? JSON.parse(data) : null;
+  try {
+    const val = await redis.get(key);
+    return val ? JSON.parse(val) : null;
+  } catch (err) {
+    console.error("Redis GET error:", err.message);
+    return null;
+  }
 }
 
 module.exports = {
