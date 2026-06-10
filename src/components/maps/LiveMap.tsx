@@ -1,16 +1,90 @@
 "use client";
 
-import type { LiveLocation } from "@/types";
+import "maplibre-gl/dist/maplibre-gl.css";
+
+import maplibregl from "maplibre-gl";
 import { useEffect, useRef, useState } from "react";
+
+import type { LiveDriverUpdate } from "@/hooks/useGpsSocket";
+import { useGpsSocket } from "@/hooks/useGpsSocket";
+
+
+/**
+ * =========================
+ * TYPES
+ * =========================
+ */
+
+type MapInstance = maplibregl.Map;
+type MarkerInstance = maplibregl.Marker;
+
+type DriverMarkerEntry = {
+  marker: MarkerInstance;
+  etaEl: HTMLDivElement | null;
+};
+
+type MarkerRegistry = globalThis.Map<string, DriverMarkerEntry>;
+
+export interface LiveLocation {
+  driver_id: string;
+  lat: number;
+  lng: number;
+  speed?: number;
+  heading?: number;
+  updated_at?: string;
+}
+
+/**
+ * =========================
+ * ETA ENGINE
+ * =========================
+ */
+
+function haversineDistance(
+  lat1: number,
+  lng1: number,
+  lat2: number,
+  lng2: number,
+): number {
+  const R = 6371;
+
+  const dLat = ((lat2 - lat1) * Math.PI) / 180;
+  const dLng = ((lng2 - lng1) * Math.PI) / 180;
+
+  const a =
+    Math.sin(dLat / 2) ** 2 +
+    Math.cos((lat1 * Math.PI) / 180) *
+      Math.cos((lat2 * Math.PI) / 180) *
+      Math.sin(dLng / 2) ** 2;
+
+  return 2 * R * Math.asin(Math.sqrt(a));
+}
+
+function computeETA(distanceKm: number): number {
+  const avgSpeed = 40; // km/h baseline (flatbed)
+  return Math.max(1, Math.round((distanceKm / avgSpeed) * 60));
+}
+
+/**
+ * =========================
+ * COMPONENT
+ * =========================
+ */
 
 interface Props {
   pickupLat?: number;
   pickupLng?: number;
+
   dropoffLat?: number;
   dropoffLng?: number;
+
   truckLocations?: LiveLocation[];
+
   interactive?: boolean;
+  wsUrl?: string;
+
   onPickupSelect?: (lat: number, lng: number, address: string) => void;
+  onDropoffSelect?: (lat: number, lng: number, address: string) => void;
 }
 
 export default function LiveMap({
@@ -20,199 +94,242 @@ export default function LiveMap({
   dropoffLng,
   truckLocations = [],
   interactive = false,
+  wsUrl = "ws://localhost:4001",
   onPickupSelect,
-}: Props) {
+  onDropoffSelect,
+}: Props): JSX.Element {
   const containerRef = useRef<HTMLDivElement | null>(null);
-  const mapRef = useRef<any>(null);
-  const markersRef = useRef<Map<string, any>>(new Map());
+  const mapRef = useRef<MapInstance | null>(null);
+
+  const driversRef = useRef<MarkerRegistry>(new globalThis.Map());
+
+  const pickupMarker = useRef<MarkerInstance | null>(null);
+  const dropoffMarker = useRef<MarkerInstance | null>(null);
+
+  const selectionMode = useRef<"pickup" | "dropoff">("pickup");
 
   const [mapError, setMapError] = useState<string | null>(null);
 
-  // ─────────────────────────────────────────────
-  // 1. INIT MAP (SAFE + NO RACE CONDITIONS)
-  // ─────────────────────────────────────────────
+  /**
+   * =========================
+   * SMOOTH MOTION STATE
+   * =========================
+   */
+  const [driverTargets, setDriverTargets] = useState<
+    Record<string, { lat: number; lng: number }>
+  >({});
+
+  /**
+   * =========================
+   * INIT MAP
+   * =========================
+   */
   useEffect(() => {
     if (!containerRef.current || mapRef.current) return;
 
-    let cancelled = false;
-
-    const initMap = async () => {
-      try {
-        const maplibregl = (await import("maplibre-gl")).default;
-        if (cancelled || !containerRef.current) return;
-
-        const map = new maplibregl.Map({
-          container: containerRef.current,
-          style: {
-            version: 8,
-            sources: {
-              osm: {
-                type: "raster",
-                tiles: ["https://tile.openstreetmap.org/{z}/{x}/{y}.png"],
-                tileSize: 256,
-                attribution: "© OpenStreetMap",
-              },
+    try {
+      const map = new maplibregl.Map({
+        container: containerRef.current,
+        style: {
+          version: 8,
+          sources: {
+            osm: {
+              type: "raster",
+              tiles: ["https://tile.openstreetmap.org/{z}/{x}/{y}.png"],
+              tileSize: 256,
+              attribution: "© OpenStreetMap",
             },
-            layers: [
-              {
-                id: "osm",
-                type: "raster",
-                source: "osm",
-              },
-            ],
           },
-          center: [pickupLng ?? 36.8219, pickupLat ?? -1.2921],
-          zoom: 12,
+          layers: [
+            {
+              id: "osm",
+              type: "raster",
+              source: "osm",
+            },
+          ],
+        },
+        center: [pickupLng ?? 36.8219, pickupLat ?? -1.2921],
+        zoom: 12,
+      });
+
+      map.addControl(new maplibregl.NavigationControl(), "top-right");
+
+      if (interactive) {
+        map.on("click", async (e) => {
+          const lat = e.lngLat.lat;
+          const lng = e.lngLat.lng;
+
+          let address = `${lat.toFixed(5)}, ${lng.toFixed(5)}`;
+
+          try {
+            const res = await fetch(
+              `https://nominatim.openstreetmap.org/reverse?lat=${lat}&lon=${lng}&format=json`,
+            );
+            const data = await res.json();
+            address = data?.display_name ?? address;
+          } catch {}
+
+          if (selectionMode.current === "pickup") {
+            onPickupSelect?.(lat, lng, address);
+            selectionMode.current = "dropoff";
+          } else {
+            onDropoffSelect?.(lat, lng, address);
+            selectionMode.current = "pickup";
+          }
         });
-
-        map.addControl(new maplibregl.NavigationControl(), "top-right");
-
-        // Click to select pickup
-        if (interactive && onPickupSelect) {
-          map.on("click", async (e: any) => {
-            const { lng, lat } = e.lngLat;
-
-            try {
-              const res = await fetch(
-                `https://nominatim.openstreetmap.org/reverse?lat=${lat}&lon=${lng}&format=json`,
-              );
-              const data = await res.json();
-
-              onPickupSelect(
-                lat,
-                lng,
-                data?.display_name ?? `${lat.toFixed(5)}, ${lng.toFixed(5)}`,
-              );
-            } catch {
-              onPickupSelect(lat, lng, `${lat.toFixed(5)}, ${lng.toFixed(5)}`);
-            }
-          });
-        }
-
-        mapRef.current = map;
-      } catch (err) {
-        console.error("Map init failed:", err);
-        setMapError("Failed to initialize map");
       }
-    };
 
-    initMap();
+      mapRef.current = map;
+    } catch (err) {
+      console.error(err);
+      setMapError("Map failed to initialize");
+    }
 
     return () => {
-      cancelled = true;
-
       mapRef.current?.remove();
       mapRef.current = null;
-      markersRef.current.clear();
+      driversRef.current.clear();
     };
-  }, []);
+  }, [interactive]);
 
-  // ─────────────────────────────────────────────
-  // 2. PICKUP MARKER
-  // ─────────────────────────────────────────────
+  /**
+   * =========================
+   * WEBSOCKET → SMOOTH TARGETS
+   * =========================
+   */
+  useGpsSocket({
+    url: wsUrl,
+
+    onDriverUpdate: (driver: LiveDriverUpdate) => {
+      setDriverTargets((prev) => ({
+        ...prev,
+        [driver.driver_id]: {
+          lat: driver.lat,
+          lng: driver.lng,
+        },
+      }));
+    },
+  });
+
+  /**
+   * =========================
+   * SMOOTH MOTION ENGINE (UBER CORE)
+   * =========================
+   */
+  Object.entries(driverTargets).forEach(([id, target]) => {
+    const entry = driversRef.current.get(id);
+
+    // create marker if missing
+    if (!entry) {
+      const wrapper = document.createElement("div");
+      wrapper.style.position = "relative";
+
+      const icon = document.createElement("div");
+      icon.innerHTML = "🚛";
+      icon.style.fontSize = "18px";
+
+      const eta = document.createElement("div");
+      eta.style.position = "absolute";
+      eta.style.top = "-20px";
+      eta.style.left = "50%";
+      eta.style.transform = "translateX(-50%)";
+      eta.style.padding = "2px 6px";
+      eta.style.fontSize = "10px";
+      eta.style.borderRadius = "999px";
+      eta.style.background = "rgba(0,0,0,0.75)";
+      eta.style.color = "white";
+
+      wrapper.appendChild(icon);
+      wrapper.appendChild(eta);
+
+      const marker = new maplibregl.Marker({ element: wrapper })
+        .setLngLat([target.lng, target.lat])
+        .addTo(mapRef.current!);
+
+      driversRef.current.set(id, { marker, etaEl: eta });
+      return;
+    }
+
+    /**
+     * SMOOTH INTERPOLATION STEP (Uber feel)
+     */
+    const current = entry.marker.getLngLat();
+
+    const nextLng = current.lng + (target.lng - current.lng) * 0.08;
+    const nextLat = current.lat + (target.lat - current.lat) * 0.08;
+
+    entry.marker.setLngLat([nextLng, nextLat]);
+
+    /**
+     * ETA UPDATE
+     */
+    if (pickupLat && pickupLng && entry.etaEl) {
+      const dist = haversineDistance(nextLat, nextLng, pickupLat, pickupLng);
+      const eta = computeETA(dist);
+
+      entry.etaEl.textContent = eta <= 1 ? "Arriving" : `${eta} min`;
+    }
+  });
+
+  /**
+   * =========================
+   * PICKUP MARKER
+   * =========================
+   */
   useEffect(() => {
-    if (!mapRef.current || pickupLat == null || pickupLng == null) return;
+    const map = mapRef.current;
+    if (!map || pickupLat == null || pickupLng == null) return;
 
-    import("maplibre-gl").then(({ default: maplibregl }) => {
-      let marker = markersRef.current.get("pickup");
+    if (!pickupMarker.current) {
+      const el = document.createElement("div");
+      el.style.width = "14px";
+      el.style.height = "14px";
+      el.style.borderRadius = "50%";
+      el.style.background = "#22c55e";
+      el.style.border = "2px solid white";
 
-      if (!marker) {
-        const el = document.createElement("div");
-        el.style.width = "14px";
-        el.style.height = "14px";
-        el.style.borderRadius = "50%";
-        el.style.background = "#22c55e";
-        el.style.border = "2px solid white";
-
-        marker = new maplibregl.Marker({ element: el })
-          .setLngLat([pickupLng, pickupLat])
-          .addTo(mapRef.current);
-
-        markersRef.current.set("pickup", marker);
-      } else {
-        marker.setLngLat([pickupLng, pickupLat]);
-      }
-    });
+      pickupMarker.current = new maplibregl.Marker({ element: el })
+        .setLngLat([pickupLng, pickupLat])
+        .addTo(map);
+    } else {
+      pickupMarker.current.setLngLat([pickupLng, pickupLat]);
+    }
   }, [pickupLat, pickupLng]);
 
-  // ─────────────────────────────────────────────
-  // 3. DROPOFF MARKER
-  // ─────────────────────────────────────────────
+  /**
+   * =========================
+   * DROPOFF MARKER
+   * =========================
+   */
   useEffect(() => {
-    if (!mapRef.current || dropoffLat == null || dropoffLng == null) return;
+    const map = mapRef.current;
+    if (!map || dropoffLat == null || dropoffLng == null) return;
 
-    import("maplibre-gl").then(({ default: maplibregl }) => {
-      let marker = markersRef.current.get("dropoff");
+    if (!dropoffMarker.current) {
+      const el = document.createElement("div");
+      el.style.width = "14px";
+      el.style.height = "14px";
+      el.style.borderRadius = "50%";
+      el.style.background = "#ef4444";
+      el.style.border = "2px solid white";
 
-      if (!marker) {
-        const el = document.createElement("div");
-        el.style.width = "14px";
-        el.style.height = "14px";
-        el.style.borderRadius = "50%";
-        el.style.background = "#ef4444";
-        el.style.border = "2px solid white";
-
-        marker = new maplibregl.Marker({ element: el })
-          .setLngLat([dropoffLng, dropoffLat])
-          .addTo(mapRef.current);
-
-        markersRef.current.set("dropoff", marker);
-      } else {
-        marker.setLngLat([dropoffLng, dropoffLat]);
-      }
-    });
+      dropoffMarker.current = new maplibregl.Marker({ element: el })
+        .setLngLat([dropoffLng, dropoffLat])
+        .addTo(map);
+    } else {
+      dropoffMarker.current.setLngLat([dropoffLng, dropoffLat]);
+    }
   }, [dropoffLat, dropoffLng]);
 
-  // ─────────────────────────────────────────────
-  // 4. TRUCK MARKERS (LIVE FLEET)
-  // ─────────────────────────────────────────────
-  useEffect(() => {
-    if (!mapRef.current) return;
-
-    import("maplibre-gl").then(({ default: maplibregl }) => {
-      truckLocations.forEach((loc) => {
-        const key = `truck-${loc.flatbed_id}`;
-
-        let marker = markersRef.current.get(key);
-
-        if (!marker) {
-          const el = document.createElement("div");
-          el.textContent = "🚛";
-          el.style.fontSize = "20px";
-
-          marker = new maplibregl.Marker({ element: el })
-            .setLngLat([loc.lng, loc.lat])
-            .addTo(mapRef.current);
-
-          markersRef.current.set(key, marker);
-        } else {
-          marker.setLngLat([loc.lng, loc.lat]);
-        }
-      });
-    });
-  }, [truckLocations]);
-
-  // ─────────────────────────────────────────────
-  // 5. FALLBACK UI
-  // ─────────────────────────────────────────────
+  /**
+   * =========================
+   * UI
+   * =========================
+   */
   if (mapError) {
     return (
-      <div className="flex h-full min-h-[400px] items-center justify-center rounded-xl border bg-gray-100 p-6 text-center">
-        <div>
-          <p className="font-semibold">Map unavailable</p>
-          <p className="text-sm text-gray-600 mt-2">{mapError}</p>
-
-          {pickupLat && pickupLng && (
-            <a
-              href={`https://www.google.com/maps?q=${pickupLat},${pickupLng}`}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="mt-4 inline-block rounded bg-blue-600 px-4 py-2 text-white"
-            >
-              Open in Google Maps
-            </a>
-          )}
-        </div>
+      <div className="flex h-[420px] items-center justify-center rounded-xl border bg-slate-900 text-white">
+        {mapError}
       </div>
     );
   }
@@ -220,7 +337,7 @@ export default function LiveMap({
   return (
     <div
       ref={containerRef}
-      className="h-full min-h-[400px] w-full rounded-xl"
+      className="h-[420px] w-full rounded-xl overflow-hidden"
     />
   );
 }

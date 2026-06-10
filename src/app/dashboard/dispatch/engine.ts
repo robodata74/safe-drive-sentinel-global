@@ -1,5 +1,3 @@
-// src/app/dashboard/dispatch/engine.ts
-
 export type BookingStatus = "pending" | "matched" | "assigned" | "completed";
 
 export interface Booking {
@@ -11,7 +9,6 @@ export interface Booking {
   created_at: string;
   customer_name?: string;
 
-  // optional geo (important for AI matching)
   lat?: number;
   lng?: number;
 }
@@ -28,14 +25,18 @@ export interface Driver {
 }
 
 /**
- * MUST MATCH your LiveLocation type EXACTLY
+ * 🔥 SINGLE SOURCE OF TRUTH (FIXED)
+ * Replaces flatbed_id → driver_id
  */
 export interface LiveLocation {
-  flatbed_id: string;
+  driver_id: string;
+
   lat: number;
   lng: number;
+
   speed: number;
   heading: number;
+
   updated_at: string;
 }
 
@@ -51,7 +52,6 @@ export interface MatchResult {
  * ==============================
  */
 export class DispatchEngine {
-  // distance (simple euclidean for now)
   static distanceScore(driver: Driver, booking: Booking): number {
     if (!booking.lat || !booking.lng) return 0;
 
@@ -117,25 +117,28 @@ export class DispatchEngine {
   }
 
   static autoMatch(bookings: Booking[], drivers: Driver[]): MatchResult[] {
-    const pending = bookings.filter((b) => b.status === "pending");
-
-    return pending
+    return bookings
+      .filter((b) => b.status === "pending")
       .map((b) => this.findBestDriver(b, drivers))
       .filter(Boolean) as MatchResult[];
   }
 }
 
 /**
- * FIXED: Live location generator (fixes your TS error)
+ * ==============================
+ * LIVE GPS ADAPTER (FIXED)
+ * ==============================
  */
 export function createLiveLocation(driver: Driver): LiveLocation {
   return {
-    flatbed_id: driver.id,
+    driver_id: driver.id,
+
     lat: driver.lat,
     lng: driver.lng,
 
     speed: driver.status === "busy" ? 45 : 0,
     heading: Math.floor(Math.random() * 360),
+
     updated_at: new Date().toISOString(),
   };
 }
