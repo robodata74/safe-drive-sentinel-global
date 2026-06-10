@@ -1,71 +1,109 @@
 const Redis = require("ioredis");
 
-if (!process.env.REDIS_URL) {
+const redisUrl = process.env.REDIS_URL;
+
+if (!redisUrl) {
   throw new Error("❌ REDIS_URL missing");
 }
 
-const redis = new Redis(process.env.REDIS_URL, {
-  maxRetriesPerRequest: null,
-  enableReadyCheck: false,
+/**
+ * MAIN REDIS CONNECTION
+ * Production-safe for Render + Upstash
+ */
+const redis = new Redis(redisUrl, {
   lazyConnect: true,
 
+  enableOfflineQueue: false,
+
+  maxRetriesPerRequest: null,
+
   retryStrategy(times) {
-    const delay = Math.min(times * 500, 5000);
+    const delay = Math.min(times * 200, 3000);
 
     console.log(`🔄 Redis reconnect attempt ${times}`);
+
     return delay;
   },
 
-  reconnectOnError(err) {
-    console.log("🔴 Redis reconnect:", err.message);
+  reconnectOnError() {
     return true;
   },
 
   tls: {},
 });
 
+/**
+ * CONNECT SAFELY
+ */
+(async () => {
+  try {
+    await redis.connect();
+
+    console.log("✅ Redis connected");
+  } catch (err) {
+    console.error("🔴 Redis connection failed:", err.message);
+  }
+})();
+
+/**
+ * REDIS EVENTS
+ */
 redis.on("connect", () => {
-  console.log("✅ Redis connected");
+  console.log("🟢 Redis socket opened");
 });
 
 redis.on("ready", () => {
-  console.log("🚀 Redis ready");
+  console.log("✅ Redis ready");
 });
 
 redis.on("error", (err) => {
-  console.log("🔴 Redis error:", err.message);
-});
-
-redis.on("close", () => {
-  console.log("⚠️ Redis connection closed");
+  console.error("🔴 Redis error:", err.message);
 });
 
 redis.on("reconnecting", () => {
-  console.log("🔄 Redis reconnecting...");
+  console.log("🟠 Redis reconnecting...");
+});
+
+redis.on("close", () => {
+  console.log("⚫ Redis closed");
 });
 
 /**
- * Store value
+ * SET VALUE
  */
 async function setValue(key, value, ttl = 60) {
   try {
     await redis.set(key, JSON.stringify(value), "EX", ttl);
   } catch (err) {
-    console.error("Redis setValue failed:", err.message);
+    console.error("Redis SET failed:", err.message);
   }
 }
 
 /**
- * Get value
+ * GET VALUE
  */
 async function getValue(key) {
   try {
     const data = await redis.get(key);
 
-    return data ? JSON.parse(data) : null;
+    if (!data) return null;
+
+    return JSON.parse(data);
   } catch (err) {
-    console.error("Redis getValue failed:", err.message);
+    console.error("Redis GET failed:", err.message);
+
     return null;
+  }
+}
+
+/**
+ * DELETE VALUE
+ */
+async function deleteValue(key) {
+  try {
+    await redis.del(key);
+  } catch (err) {
+    console.error("Redis DELETE failed:", err.message);
   }
 }
 
@@ -73,4 +111,5 @@ module.exports = {
   redis,
   setValue,
   getValue,
+  deleteValue,
 };
