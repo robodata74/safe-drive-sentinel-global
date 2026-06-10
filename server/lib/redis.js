@@ -1,9 +1,13 @@
 const Redis = require("ioredis");
 
-// SINGLE CONNECTION (Production safe)
+if (!process.env.REDIS_URL) {
+  throw new Error("❌ REDIS_URL missing");
+}
+
 const redis = new Redis(process.env.REDIS_URL, {
-  maxRetriesPerRequest: 3,
-  enableReadyCheck: true,
+  maxRetriesPerRequest: null,
+  enableReadyCheck: false,
+  lazyConnect: true,
 });
 
 redis.on("connect", () => {
@@ -15,25 +19,28 @@ redis.on("error", (err) => {
 });
 
 /**
- * SET VALUE (with TTL)
+ * Store value
  */
-async function setValue(key, value, ttlSeconds = 60) {
+async function setValue(key, value, ttl = 60) {
   try {
-    await redis.set(key, JSON.stringify(value), "EX", ttlSeconds);
+    await redis.set(key, JSON.stringify(value), "EX", ttl);
   } catch (err) {
-    console.error("Redis SET error:", err.message);
+    console.error("Redis set error:", err.message);
   }
 }
 
 /**
- * GET VALUE
+ * Get value
  */
 async function getValue(key) {
   try {
-    const val = await redis.get(key);
-    return val ? JSON.parse(val) : null;
+    const value = await redis.get(key);
+
+    if (!value) return null;
+
+    return JSON.parse(value);
   } catch (err) {
-    console.error("Redis GET error:", err.message);
+    console.error("Redis get error:", err.message);
     return null;
   }
 }
