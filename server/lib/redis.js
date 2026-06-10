@@ -8,14 +8,40 @@ const redis = new Redis(process.env.REDIS_URL, {
   maxRetriesPerRequest: null,
   enableReadyCheck: false,
   lazyConnect: true,
+
+  retryStrategy(times) {
+    const delay = Math.min(times * 500, 5000);
+
+    console.log(`🔄 Redis reconnect attempt ${times}`);
+    return delay;
+  },
+
+  reconnectOnError(err) {
+    console.log("🔴 Redis reconnect:", err.message);
+    return true;
+  },
+
+  tls: {},
 });
 
 redis.on("connect", () => {
-  console.log("🟢 Redis connected");
+  console.log("✅ Redis connected");
+});
+
+redis.on("ready", () => {
+  console.log("🚀 Redis ready");
 });
 
 redis.on("error", (err) => {
-  console.error("🔴 Redis error:", err.message);
+  console.log("🔴 Redis error:", err.message);
+});
+
+redis.on("close", () => {
+  console.log("⚠️ Redis connection closed");
+});
+
+redis.on("reconnecting", () => {
+  console.log("🔄 Redis reconnecting...");
 });
 
 /**
@@ -25,7 +51,7 @@ async function setValue(key, value, ttl = 60) {
   try {
     await redis.set(key, JSON.stringify(value), "EX", ttl);
   } catch (err) {
-    console.error("Redis set error:", err.message);
+    console.error("Redis setValue failed:", err.message);
   }
 }
 
@@ -34,13 +60,11 @@ async function setValue(key, value, ttl = 60) {
  */
 async function getValue(key) {
   try {
-    const value = await redis.get(key);
+    const data = await redis.get(key);
 
-    if (!value) return null;
-
-    return JSON.parse(value);
+    return data ? JSON.parse(data) : null;
   } catch (err) {
-    console.error("Redis get error:", err.message);
+    console.error("Redis getValue failed:", err.message);
     return null;
   }
 }
