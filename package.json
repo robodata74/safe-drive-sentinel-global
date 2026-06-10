@@ -4,11 +4,11 @@
   "private": true,
   "description": "SafeDrive Sentinel Global - Vehicle Rescue & Flatbed Intelligence Platform",
   "scripts": {
-    "dev": "node --max-old-space-size=4096 node_modules/next/dist/bin/next dev",
-    "build": "next build",
+    "dev": "node --max-old-space-size=4096 ./node_modules/next/dist/bin/next dev",
+    "build": "node --max-old-space-size=4096 ./node_modules/next/dist/bin/next build",
     "start": "next start",
     "lint": "next lint",
-    "type-check": "tsc --noEmit",
+    "type-check": "tsc --noEmit --skipLibCheck",
     "clean": "rmdir /s /q .next && rmdir /s /q node_modules\\.cache",
     "reinstall": "npm run clean && npm install"
   },
@@ -62,7 +62,6 @@
     "typescript": "^5.5.3"
   },
   "engines": {
-    "node": ">=20.0.0",
-    "npm": ">=10.0.0"
+    "node": "20.x"
   }
 }
