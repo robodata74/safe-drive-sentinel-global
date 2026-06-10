@@ -24,6 +24,35 @@ export const metadata: Metadata = {
     "global towing service",
   ],
 
+  manifest: "/manifest.json",
+
+  icons: {
+    icon: [
+      {
+        url: "/icons/icon-192.png",
+        sizes: "192x192",
+        type: "image/png",
+      },
+      {
+        url: "/icons/icon-512.png",
+        sizes: "512x512",
+        type: "image/png",
+      },
+    ],
+
+    apple: [
+      {
+        url: "/icons/icon-192.png",
+      },
+    ],
+  },
+
+  appleWebApp: {
+    capable: true,
+    statusBarStyle: "black-translucent",
+    title: "SafeDrive",
+  },
+
   openGraph: {
     title: "SafeDrive Sentinel",
 

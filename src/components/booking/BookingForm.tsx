@@ -3,6 +3,31 @@
 import { useRouter } from "next/navigation";
 import { useState } from "react";
 
+/**
+ * =========================
+ * SAFE GEOCODER (OSM)
+ * =========================
+ */
+async function geocode(address: string) {
+  const res = await fetch(
+    `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(
+      address,
+    )}`,
+  );
+
+  if (!res.ok) throw new Error("Geocoding failed");
+
+  const data = await res.json();
+
+  if (!data?.length) throw new Error("Location not found: " + address);
+
+  return {
+    lat: parseFloat(data[0].lat),
+    lng: parseFloat(data[0].lon),
+    display_name: data[0].display_name,
+  };
+}
+
 export default function BookingForm() {
   const router = useRouter();
 
@@ -20,20 +45,45 @@ export default function BookingForm() {
     setError(null);
 
     try {
+      /**
+       * =========================
+       * STEP 1: GEOCODE LOCATIONS
+       * =========================
+       */
+      const pickupGeo = await geocode(pickup_address);
+      const dropoffGeo = await geocode(dropoff_address);
+
+      /**
+       * =========================
+       * STEP 2: SEND STRUCTURED DATA
+       * =========================
+       */
       const res = await fetch("/api/bookings/create", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
         },
         body: JSON.stringify({
-          pickup_address,
-          dropoff_address,
+          pickup: {
+            lat: pickupGeo.lat,
+            lng: pickupGeo.lng,
+            address: pickupGeo.display_name,
+          },
+          dropoff: {
+            lat: dropoffGeo.lat,
+            lng: dropoffGeo.lng,
+            address: dropoffGeo.display_name,
+          },
           vehicle_description,
           notes,
         }),
       });
 
-      // 🚨 IMPORTANT: guard against HTML error pages
+      /**
+       * =========================
+       * SAFE RESPONSE HANDLING
+       * =========================
+       */
       const contentType = res.headers.get("content-type");
 
       if (!res.ok) {
@@ -43,7 +93,7 @@ export default function BookingForm() {
 
       if (!contentType?.includes("application/json")) {
         const text = await res.text();
-        throw new Error("Server did not return JSON: " + text.slice(0, 80));
+        throw new Error("Invalid server response: " + text.slice(0, 80));
       }
 
       const data = await res.json();

@@ -1,122 +1,152 @@
-import { WebSocket } from "ws";
-import { gpsStream } from "../gps/gpsStream";
-import { dispatchAICore } from "./dispatchAICore";
+import { gpsStream } from "@/lib/dispatch/gps/gpsStream";
+import { WebSocket, WebSocketServer } from "ws";
 
-/**
- * =========================
- * TYPES
- * =========================
- */
+interface ClientMessage {
+  type: "connect" | "gps_update" | "heartbeat";
+  payload: any;
+}
+
 interface ConnectedDriver {
   driverId: string;
   socket: WebSocket;
 }
 
-interface GPSPayload {
-  driverId: string;
-  lat: number;
-  lng: number;
-  speed?: number;
-  heading?: number;
-  timestamp?: number;
-}
-
-/**
- * =========================
- * SOCKET ENGINE (FIXED)
- * =========================
- */
 class DispatchSocketEngine {
+  private wss: WebSocketServer;
   private drivers = new Map<string, ConnectedDriver>();
 
-  /**
-   * CONNECT DRIVER
-   */
-  connectDriver(driverId: string, socket: WebSocket): void {
-    if (!driverId || typeof driverId !== "string") {
-      socket.close();
-      return;
-    }
+  constructor(port: number) {
+    this.wss = new WebSocketServer({ port });
 
-    this.drivers.set(driverId, {
-      driverId,
-      socket,
-    });
+    console.log(`🚀 SOCKET ENGINE LIVE ON ws://localhost:${port}`);
 
-    console.log(`🔌 Driver connected: ${driverId}`);
-
-    this.send(driverId, {
-      type: "connected",
-      driverId,
-    });
-
-    dispatchAICore.trigger();
+    this.init();
   }
 
   /**
-   * GPS UPDATE
+   * =========================
+   * INIT SERVER
+   * =========================
    */
-  handleGPSUpdate(payload: GPSPayload): void {
-    if (
-      !payload?.driverId ||
-      typeof payload.lat !== "number" ||
-      typeof payload.lng !== "number"
-    ) {
-      return;
-    }
+  private init(): void {
+    this.wss.on("connection", (ws: WebSocket) => {
+      let driverId: string | null = null;
 
-    gpsStream.push({
-      userId: payload.driverId,
-      role: "driver",
-      lat: payload.lat,
-      lng: payload.lng,
-      speed: payload.speed,
-      heading: payload.heading,
-      timestamp: payload.timestamp ?? Date.now(),
+      console.log("🔌 NEW SOCKET CONNECTION");
+
+      ws.on("message", (msg) => {
+        try {
+          const data: ClientMessage = JSON.parse(msg.toString());
+
+          /**
+           * =========================
+           * DRIVER CONNECT
+           * =========================
+           */
+          if (data.type === "connect") {
+            const id = data.payload?.driverId;
+
+            if (typeof id !== "string" || !id) {
+              ws.close();
+              return;
+            }
+
+            driverId = id;
+
+            this.drivers.set(driverId, {
+              driverId,
+              socket: ws,
+            });
+
+            ws.send(
+              JSON.stringify({
+                type: "connected",
+                driverId,
+              }),
+            );
+
+            console.log(`✅ DRIVER CONNECTED: ${driverId}`);
+            return;
+          }
+
+          /**
+           * =========================
+           * GPS UPDATE STREAM
+           * =========================
+           */
+          if (data.type === "gps_update" && driverId) {
+            gpsStream.push({
+              userId: driverId,
+              role: "driver",
+              lat: data.payload.lat,
+              lng: data.payload.lng,
+              speed: data.payload.speed,
+              heading: data.payload.heading,
+              timestamp: Date.now(),
+            });
+
+            return;
+          }
+
+          /**
+           * HEARTBEAT
+           */
+          if (data.type === "heartbeat") {
+            ws.send(JSON.stringify({ type: "alive" }));
+          }
+        } catch (err) {
+          console.error("❌ SOCKET ERROR:", err);
+        }
+      });
+
+      /**
+       * =========================
+       * CLEAN DISCONNECT
+       * =========================
+       */
+      ws.on("close", () => {
+        if (driverId) {
+          this.drivers.delete(driverId);
+          console.log(`❌ DRIVER DISCONNECTED: ${driverId}`);
+        }
+      });
     });
-
-    /**
-     * trigger AI instantly
-     */
-    dispatchAICore.trigger();
   }
 
   /**
-   * SEND TO DRIVER
+   * =========================
+   * BROADCAST TO ALL DRIVERS
+   * =========================
    */
-  send(driverId: string, payload: any): void {
-    const driver = this.drivers.get(driverId);
-
-    if (!driver) return;
-
-    if (driver.socket.readyState === WebSocket.OPEN) {
-      driver.socket.send(JSON.stringify(payload));
-    }
-  }
-
-  /**
-   * BROADCAST
-   */
-  broadcast(payload: any): void {
+  broadcast(data: any): void {
     for (const driver of this.drivers.values()) {
       if (driver.socket.readyState === WebSocket.OPEN) {
-        driver.socket.send(JSON.stringify(payload));
+        driver.socket.send(JSON.stringify(data));
       }
     }
   }
 
   /**
-   * DISCONNECT
+   * =========================
+   * SEND TO SPECIFIC DRIVER
+   * =========================
    */
-  disconnectDriver(driverId: string): void {
-    this.drivers.delete(driverId);
-    dispatchAICore.trigger();
+  sendToDriver(driverId: string, data: any): void {
+    const driver = this.drivers.get(driverId);
 
-    console.log(`❌ Driver disconnected: ${driverId}`);
+    if (!driver) return;
+
+    if (driver.socket.readyState === WebSocket.OPEN) {
+      driver.socket.send(JSON.stringify(data));
+    }
   }
 }
 
 /**
- * SINGLETON EXPORT
+ * =========================
+ * SINGLETON ENGINE
+ * =========================
  */
-export const dispatchSocketEngine = new DispatchSocketEngine();
+export const dispatchSocketEngine = new DispatchSocketEngine(
+  Number(process.env.SOCKET_PORT ?? 4001),
+);

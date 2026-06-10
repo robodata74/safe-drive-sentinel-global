@@ -6,49 +6,70 @@ import "maplibre-gl/dist/maplibre-gl.css";
 import { useEffect, useRef } from "react";
 
 /**
- * =========================
- * LIVE DISPATCH MAP (HARDENED)
- * =========================
- * FIXES:
- * - marker cleanup
- * - offline removal
- * - smoother updates
- * - memory-safe rendering
+ * ==========================================
+ * SAFE DRIVE GLOBAL — MAP RENDER ENGINE
+ * STEP 3.8: STABLE REALTIME MAP LAYER
+ * ==========================================
  */
+
+type DriverMarker = {
+  marker: maplibregl.Marker;
+  lastLat: number;
+  lastLng: number;
+};
+
+type BookingMarker = {
+  marker: maplibregl.Marker;
+};
 
 export default function LiveDispatchMap() {
   const mapRef = useRef<maplibregl.Map | null>(null);
-  const mapContainer = useRef<HTMLDivElement | null>(null);
+  const containerRef = useRef<HTMLDivElement | null>(null);
 
-  const driverMarkers = useRef<Map<string, maplibregl.Marker>>(new Map());
-  const bookingMarkers = useRef<Map<string, maplibregl.Marker>>(new Map());
+  const driverMarkers = useRef<Map<string, DriverMarker>>(new Map());
+  const bookingMarkers = useRef<Map<string, BookingMarker>>(new Map());
+
+  const initialized = useRef(false);
 
   /**
    * =========================
-   * INIT MAP
+   * INIT MAP (ONCE ONLY)
    * =========================
    */
   useEffect(() => {
-    if (!mapContainer.current || mapRef.current) return;
+    if (!containerRef.current || initialized.current) return;
 
-    mapRef.current = new maplibregl.Map({
-      container: mapContainer.current,
+    const map = new maplibregl.Map({
+      container: containerRef.current,
       style: "https://tiles.openfreemap.org/styles/liberty",
       center: [36.8219, -1.2921],
-      zoom: 12,
+      zoom: 11,
+      maxZoom: 18,
     });
 
-    mapRef.current.addControl(new maplibregl.NavigationControl(), "top-right");
+    map.addControl(new maplibregl.NavigationControl(), "top-right");
+
+    mapRef.current = map;
+    initialized.current = true;
 
     return () => {
-      mapRef.current?.remove();
+      map.remove();
+
+      // HARD CLEANUP
+      driverMarkers.current.forEach((m) => m.marker.remove());
+      bookingMarkers.current.forEach((m) => m.marker.remove());
+
+      driverMarkers.current.clear();
+      bookingMarkers.current.clear();
+
       mapRef.current = null;
+      initialized.current = false;
     };
   }, []);
 
   /**
    * =========================
-   * REALTIME SYNC ENGINE
+   * DIFF ENGINE (CORE FIX)
    * =========================
    */
   useEffect(() => {
@@ -58,17 +79,17 @@ export default function LiveDispatchMap() {
 
       const snapshot = dispatchStore.getSnapshot();
 
-      const activeDriverIds = new Set(snapshot.drivers.map((d) => d.id));
-      const activeBookingIds = new Set(snapshot.bookings.map((b) => b.id));
+      const activeDrivers = new Set(snapshot.drivers.map((d) => d.id));
+      const activeBookings = new Set(snapshot.bookings.map((b) => b.id));
 
       /**
        * =========================
        * REMOVE STALE DRIVERS
        * =========================
        */
-      for (const [id, marker] of driverMarkers.current.entries()) {
-        if (!activeDriverIds.has(id)) {
-          marker.remove();
+      for (const [id, entry] of driverMarkers.current.entries()) {
+        if (!activeDrivers.has(id)) {
+          entry.marker.remove();
           driverMarkers.current.delete(id);
         }
       }
@@ -78,78 +99,98 @@ export default function LiveDispatchMap() {
        * REMOVE STALE BOOKINGS
        * =========================
        */
-      for (const [id, marker] of bookingMarkers.current.entries()) {
-        if (!activeBookingIds.has(id)) {
-          marker.remove();
+      for (const [id, entry] of bookingMarkers.current.entries()) {
+        if (!activeBookings.has(id)) {
+          entry.marker.remove();
           bookingMarkers.current.delete(id);
         }
       }
 
       /**
        * =========================
-       * UPDATE DRIVERS
+       * UPSERT DRIVERS (MOVE ONLY IF CHANGED)
        * =========================
        */
-      snapshot.drivers.forEach((driver) => {
+      for (const driver of snapshot.drivers) {
         const lng = driver.location.lng;
         const lat = driver.location.lat;
 
         const existing = driverMarkers.current.get(driver.id);
 
         if (existing) {
-          existing.setLngLat([lng, lat]);
-          return;
+          const moved = existing.lastLat !== lat || existing.lastLng !== lng;
+
+          if (moved) {
+            existing.marker.setLngLat([lng, lat]);
+            existing.lastLat = lat;
+            existing.lastLng = lng;
+          }
+
+          continue;
         }
 
         const el = document.createElement("div");
+        el.className = "driver-marker";
         el.innerHTML = "🚛";
-        el.style.fontSize = "26px";
+        el.style.fontSize = "24px";
+        el.style.transform = "translate(-50%, -50%)";
 
-        const marker = new maplibregl.Marker({ element: el })
+        const marker = new maplibregl.Marker({
+          element: el,
+          anchor: "center",
+        })
           .setLngLat([lng, lat])
           .setPopup(
-            new maplibregl.Popup().setHTML(`
-              <strong>${driver.name ?? "Driver"}</strong><br/>
-              Status: ${driver.status}
+            new maplibregl.Popup({ offset: 20 }).setHTML(`
+              <div style="font-size:12px">
+                <strong>${driver.name ?? "Driver"}</strong><br/>
+                Status: ${driver.status}
+              </div>
             `),
           )
           .addTo(map);
 
-        driverMarkers.current.set(driver.id, marker);
-      });
+        driverMarkers.current.set(driver.id, {
+          marker,
+          lastLat: lat,
+          lastLng: lng,
+        });
+      }
 
       /**
        * =========================
-       * UPDATE BOOKINGS
+       * UPSERT BOOKINGS (NO DUPLICATES)
        * =========================
        */
-      snapshot.bookings.forEach((booking) => {
+      for (const booking of snapshot.bookings) {
         const lng = booking.pickup.lng;
         const lat = booking.pickup.lat;
 
-        const existing = bookingMarkers.current.get(booking.id);
-
-        if (existing) {
-          existing.setLngLat([lng, lat]);
-          return;
-        }
+        if (bookingMarkers.current.has(booking.id)) continue;
 
         const el = document.createElement("div");
+        el.className = "booking-marker";
         el.innerHTML = "📍";
-        el.style.fontSize = "26px";
+        el.style.fontSize = "22px";
+        el.style.transform = "translate(-50%, -50%)";
 
-        const marker = new maplibregl.Marker({ element: el })
+        const marker = new maplibregl.Marker({
+          element: el,
+          anchor: "center",
+        })
           .setLngLat([lng, lat])
           .setPopup(
-            new maplibregl.Popup().setHTML(`
-              <strong>Booking</strong><br/>
-              Status: ${booking.status}
+            new maplibregl.Popup({ offset: 20 }).setHTML(`
+              <div style="font-size:12px">
+                <strong>Booking</strong><br/>
+                Status: ${booking.status}
+              </div>
             `),
           )
           .addTo(map);
 
-        bookingMarkers.current.set(booking.id, marker);
-      });
+        bookingMarkers.current.set(booking.id, { marker });
+      }
     });
 
     return unsubscribe;
@@ -157,13 +198,8 @@ export default function LiveDispatchMap() {
 
   return (
     <div
-      ref={mapContainer}
-      style={{
-        width: "100%",
-        height: "100vh",
-        borderRadius: 16,
-        overflow: "hidden",
-      }}
+      ref={containerRef}
+      className="w-full h-full rounded-xl overflow-hidden"
     />
   );
 }

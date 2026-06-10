@@ -3,28 +3,30 @@ import { dispatchSocketManager } from "../src/lib/dispatch/dispatchSocketManager
 
 /**
  * ==========================================================
- * SAFEDRIVE GLOBAL SOCKET ENGINE
- * PRODUCTION REALTIME BACKBONE (HARDENED v1)
+ * SAFEDRIVE GLOBAL — SOCKET ENGINE (DEPLOY v7 FINAL)
+ * HARDENED REALTIME TRANSPORT LAYER
  * ==========================================================
  */
 
 interface DriverSocketMessage {
   type: "gps_update" | "connect" | "disconnect" | "ping";
-  payload: any;
+  payload?: any;
 }
 
 const PORT = Number(process.env.SOCKET_PORT ?? 4001);
 
 const wss = new WebSocketServer({
   port: PORT,
-  maxPayload: 1024 * 1024, // 1MB safety cap
+  maxPayload: 256 * 1024, // 🔥 reduced for safety
+  clientTracking: true,
+  perMessageDeflate: false, // 🔥 reduces CPU spikes
 });
 
 console.log(`🚀 SOCKET ENGINE LIVE ws://localhost:${PORT}`);
 
 /**
  * ==========================================================
- * CONNECTION REGISTRY
+ * CONNECTION STATE
  * ==========================================================
  */
 
@@ -33,13 +35,43 @@ type Connection = {
   lastPing: number;
   driverId?: string;
   isAlive: boolean;
+  lastGpsUpdate: number;
+  closed: boolean;
+
+  // 🔥 backpressure protection
+  messageQueue: number;
 };
 
 const connections = new Map<string, Connection>();
 
 /**
  * ==========================================================
- * HEARTBEAT (GLOBAL CLEANER)
+ * HEARTBEAT PING LOOP (CRITICAL FIX)
+ * ==========================================================
+ */
+
+const HEARTBEAT_INTERVAL = 10000;
+
+const heartbeat = setInterval(() => {
+  for (const [, conn] of connections.entries()) {
+    if (!conn.isAlive) {
+      try {
+        conn.ws.terminate();
+      } catch {}
+      continue;
+    }
+
+    conn.isAlive = false;
+
+    try {
+      conn.ws.ping();
+    } catch {}
+  }
+}, HEARTBEAT_INTERVAL);
+
+/**
+ * ==========================================================
+ * CLEANUP LOOP
  * ==========================================================
  */
 
@@ -47,21 +79,23 @@ setInterval(() => {
   const now = Date.now();
 
   for (const [id, conn] of connections.entries()) {
-    const timeout = now - conn.lastPing > 20000;
+    const dead = now - conn.lastPing > 20000 || conn.closed;
 
-    if (timeout || !conn.isAlive) {
-      try {
-        conn.ws.terminate();
-      } catch {}
+    if (!dead) continue;
 
-      connections.delete(id);
+    conn.closed = true;
 
-      if (conn.driverId) {
-        dispatchSocketManager.disconnectDriver(conn.driverId);
-      }
+    try {
+      conn.ws.terminate();
+    } catch {}
 
-      console.log(`💀 SOCKET REMOVED: ${conn.driverId ?? id}`);
+    connections.delete(id);
+
+    if (conn.driverId) {
+      dispatchSocketManager.disconnectDriver(conn.driverId);
     }
+
+    console.log(`💀 SOCKET CLEANED: ${conn.driverId ?? id}`);
   }
 }, 5000);
 
@@ -72,17 +106,22 @@ setInterval(() => {
  */
 
 wss.on("connection", (ws: WebSocket) => {
-  const connectionId = `${Date.now()}-${Math.random()}`;
+  const connectionId = crypto.randomUUID();
 
   const conn: Connection = {
     ws,
     lastPing: Date.now(),
     isAlive: true,
+    lastGpsUpdate: 0,
+    closed: false,
+    messageQueue: 0,
   };
 
   connections.set(connectionId, conn);
 
   console.log("🔌 CLIENT CONNECTED");
+
+  const safeConn = () => connections.get(connectionId);
 
   /**
    * ======================================================
@@ -91,110 +130,143 @@ wss.on("connection", (ws: WebSocket) => {
    */
 
   ws.on("message", (message) => {
+    const connection = safeConn();
+    if (!connection || connection.closed) return;
+
+    // 🔥 BACKPRESSURE GUARD
+    connection.messageQueue++;
+
+    if (connection.messageQueue > 50) {
+      ws.close(); // kill abusive clients
+      return;
+    }
+
+    let data: DriverSocketMessage;
+
     try {
-      const data: DriverSocketMessage = JSON.parse(message.toString());
+      data = JSON.parse(message.toString());
+    } catch {
+      connection.messageQueue--;
+      return;
+    }
 
-      const connection = connections.get(connectionId);
-      if (connection) connection.lastPing = Date.now();
+    connection.lastPing = Date.now();
+    connection.messageQueue--;
 
-      /**
-       * =========================
-       * PING / HEARTBEAT
-       * =========================
-       */
-      if (data.type === "ping") {
-        ws.send(
-          JSON.stringify({
-            type: "pong",
-            timestamp: Date.now(),
-          }),
-        );
+    /**
+     * =========================
+     * PING
+     * =========================
+     */
+    if (data.type === "ping") {
+      if (ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ type: "pong", t: Date.now() }));
+      }
+      return;
+    }
 
+    /**
+     * =========================
+     * CONNECT DRIVER (LOCKED)
+     * =========================
+     */
+    if (data.type === "connect") {
+      const driverId = data.payload?.driverId;
+
+      if (typeof driverId !== "string" || !driverId.trim()) {
+        ws.close();
         return;
       }
 
-      /**
-       * =========================
-       * DRIVER CONNECT
-       * =========================
-       */
-      if (data.type === "connect") {
-        const driverId = data.payload?.driverId;
+      // 🔥 HARD LOCK (no rebind)
+      if (!connection.driverId) {
+        connection.driverId = driverId;
+      }
 
-        if (!driverId || typeof driverId !== "string") {
-          ws.close();
-          return;
+      dispatchSocketManager.connectDriver(driverId, (payload) => {
+        const c = safeConn();
+        if (!c || c.closed) return;
+
+        if (ws.readyState === WebSocket.OPEN) {
+          ws.send(JSON.stringify(payload));
         }
+      });
 
-        const conn = connections.get(connectionId);
-
-        if (conn) conn.driverId = driverId;
-
-        dispatchSocketManager.connectDriver(driverId, (payload) => {
-          if (ws.readyState === WebSocket.OPEN) {
-            ws.send(JSON.stringify(payload));
-          }
-        });
-
-        ws.send(
-          JSON.stringify({
-            type: "connected",
-            driverId,
-          }),
-        );
-
-        console.log(`🚗 DRIVER ONLINE: ${driverId}`);
-
-        return;
+      if (ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ type: "connected", driverId }));
       }
 
-      /**
-       * =========================
-       * GPS UPDATE PIPELINE
-       * =========================
-       */
-      if (data.type === "gps_update") {
-        const conn = connections.get(connectionId);
+      console.log(`🚗 DRIVER ONLINE: ${driverId}`);
+      return;
+    }
 
-        if (!conn?.driverId) return;
+    /**
+     * =========================
+     * GPS UPDATE (SANITIZED)
+     * =========================
+     */
+    if (data.type === "gps_update") {
+      const c = safeConn();
+      if (!c?.driverId) return;
 
-        const payload = {
-          ...data.payload,
-          driverId: conn.driverId,
-        };
+      const now = Date.now();
 
-        dispatchSocketManager.handleLocationUpdate(payload);
-      }
-    } catch (err) {
-      console.error("❌ SOCKET ERROR:", err);
+      if (now - c.lastGpsUpdate < 500) return;
+
+      c.lastGpsUpdate = now;
+
+      // 🔥 SAFE PAYLOAD (no spread corruption)
+      const { lat, lng, speed, heading, timestamp } = data.payload || {};
+
+      if (typeof lat !== "number" || typeof lng !== "number") return;
+
+      dispatchSocketManager.handleLocationUpdate({
+        driverId: c.driverId,
+        lat,
+        lng,
+        speed,
+        heading,
+        timestamp: timestamp ?? now,
+      });
+
+      return;
+    }
+
+    /**
+     * =========================
+     * DISCONNECT REQUEST
+     * =========================
+     */
+    if (data.type === "disconnect") {
+      ws.close();
     }
   });
 
   /**
-   * ======================================================
-   * LIVENESS TRACKING (PONG RESPONSE)
-   * ======================================================
+   * =========================
+   * HEARTBEAT RESPONSE
+   * =========================
    */
-
   ws.on("pong", () => {
-    const conn = connections.get(connectionId);
+    const conn = safeConn();
+    if (!conn) return;
 
-    if (conn) {
-      conn.isAlive = true;
-      conn.lastPing = Date.now();
-    }
+    conn.isAlive = true;
+    conn.lastPing = Date.now();
   });
 
   /**
-   * ======================================================
-   * DISCONNECT HANDLING
-   * ======================================================
+   * =========================
+   * CLEAN DISCONNECT
+   * =========================
    */
-
   ws.on("close", () => {
-    const conn = connections.get(connectionId);
+    const conn = safeConn();
+    if (!conn) return;
 
-    if (conn?.driverId) {
+    conn.closed = true;
+
+    if (conn.driverId) {
       dispatchSocketManager.disconnectDriver(conn.driverId);
     }
 
@@ -203,13 +275,30 @@ wss.on("connection", (ws: WebSocket) => {
     console.log("❌ CLIENT DISCONNECTED");
   });
 
-  /**
-   * ======================================================
-   * ERROR HANDLING
-   * ======================================================
-   */
+  ws.on("error", () => {
+    const conn = safeConn();
+    if (conn) conn.closed = true;
 
-  ws.on("error", (err) => {
-    console.error("🔥 SOCKET ERROR:", err);
+    console.log("🔥 SOCKET ERROR");
   });
+});
+
+/**
+ * ==========================================================
+ * SAFE SHUTDOWN
+ * ==========================================================
+ */
+
+process.on("SIGTERM", () => {
+  console.log("🛑 SHUTDOWN INITIATED");
+
+  clearInterval(heartbeat);
+
+  for (const [, conn] of connections.entries()) {
+    try {
+      conn.ws.close();
+    } catch {}
+  }
+
+  process.exit(0);
 });
