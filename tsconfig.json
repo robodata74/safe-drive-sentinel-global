@@ -9,7 +9,7 @@
 
     "baseUrl": ".",
     "paths": {
-      "@/*": ["./src/*"]
+      "@/*": ["src/*"]
     },
 
     "resolveJsonModule": true,
@@ -24,6 +24,10 @@
     "allowSyntheticDefaultImports": true,
     "allowJs": false,
 
+    "forceConsistentCasingInFileNames": true,
+
+    "noUncheckedIndexedAccess": false,
+
     "plugins": [
       {
         "name": "next"
@@ -33,5 +37,5 @@
 
   "include": ["next-env.d.ts", "**/*.ts", "**/*.tsx", ".next/types/**/*.ts"],
 
-  "exclude": ["node_modules", "server", ".next"]
+  "exclude": ["node_modules", "server"]
 }
