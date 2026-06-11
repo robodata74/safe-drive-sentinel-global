@@ -2,19 +2,18 @@ module.exports = {
   apps: [
     {
       name: "safedrive-socket",
-      script: "./server/socketServer.ts",
-      interpreter: "ts-node",
+      script: "./server/index.js",
 
-      instances: 1, // IMPORTANT: socket state is in-memory → do NOT scale horizontally yet
+      instances: 1,
       exec_mode: "fork",
 
       watch: false,
 
-      max_memory_restart: "400M",
+      max_memory_restart: "500M",
 
       env: {
         NODE_ENV: "production",
-        SOCKET_PORT: 4001,
+        PORT: 4001,
       },
 
       error_file: "./logs/socket-error.log",

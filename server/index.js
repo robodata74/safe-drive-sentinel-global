@@ -1,79 +1,134 @@
-const { WebSocketServer, WebSocket } = require("ws");
-const { setValue } = require("./lib/redis");
-const { publish, subscribe, CHANNELS } = require("./lib/redisPubSub");
+require("dotenv").config({
+  path: ".env.local",
+});
 
-const PORT = process.env.PORT || 4001;
+const { WebSocketServer, WebSocket } = require("ws");
+
+// ======================================================
+// SAFE IMPORTS (FAIL-RESISTANT)
+// ======================================================
+let redis = null;
+let publish = async () => {};
+let subscribe = async () => {};
+let CHANNELS = { GPS: "gps" };
+
+try {
+  redis = require("./lib/redis");
+  console.log("🟢 Redis loaded");
+} catch (err) {
+  console.warn("⚠️ Redis disabled:", err.message);
+}
+
+try {
+  ({ publish, subscribe, CHANNELS } = require("./lib/redisPubSub"));
+
+  console.log("🟢 Redis PubSub loaded");
+} catch (err) {
+  console.warn("⚠️ PubSub disabled:", err.message);
+}
+
+// ======================================================
+// CONFIG
+// ======================================================
+const PORT = Number(process.env.SOCKET_PORT || 4001);
 
 const wss = new WebSocketServer({
   port: PORT,
+  perMessageDeflate: false,
   maxPayload: 1024 * 512,
 });
 
-console.log("🚀 MULTI-SERVER SOCKET NODE RUNNING ON", PORT);
+console.log(`🚀 SOCKET SERVER RUNNING ON ${PORT}`);
 
-/**
- * ======================================================
- * LOCAL CONNECTION STORE (PER INSTANCE ONLY)
- * ======================================================
- */
+// ======================================================
+// MEMORY STORE
+// ======================================================
 const connections = new Map();
 
-/**
- * ======================================================
- * REDIS → CROSS SERVER EVENT LISTENER
- * ======================================================
- */
-subscribe(CHANNELS.GPS, (payload) => {
-  // broadcast to local clients only
-  const msg = JSON.stringify(payload);
+// ======================================================
+// SAFE SEND
+// ======================================================
+function safeSend(ws, payload) {
+  try {
+    if (!ws || ws.readyState !== WebSocket.OPEN) return false;
 
-  for (const conn of connections.values()) {
-    if (conn.ws.readyState === WebSocket.OPEN) {
-      conn.ws.send(msg);
-    }
+    ws.send(JSON.stringify(payload));
+    return true;
+  } catch {
+    return false;
   }
-});
+}
 
-/**
- * ======================================================
- * HEARTBEAT CLEANUP
- * ======================================================
- */
-setInterval(() => {
+// ======================================================
+// PUBSUB INIT (RECOVERY SAFE)
+// ======================================================
+let subscribed = false;
+
+async function initPubSub() {
+  if (subscribed) return;
+
+  try {
+    await subscribe(CHANNELS.GPS, (payload) => {
+      for (const { ws } of connections.values()) {
+        safeSend(ws, payload);
+      }
+    });
+
+    subscribed = true;
+    console.log("🟢 PubSub GPS active");
+  } catch (err) {
+    subscribed = false;
+
+    console.error("🔴 PubSub failed:", err?.message || err);
+
+    setTimeout(initPubSub, 3000);
+  }
+}
+
+initPubSub();
+
+// ======================================================
+// HEARTBEAT CLEANUP
+// ======================================================
+const cleanupInterval = setInterval(() => {
   const now = Date.now();
 
   for (const [id, conn] of connections.entries()) {
-    const dead = !conn.ws.isAlive || now - conn.lastPing > 20000;
+    const ws = conn.ws;
+
+    const dead =
+      !ws ||
+      ws.readyState !== WebSocket.OPEN ||
+      ws.isAlive === false ||
+      now - conn.lastPing > 30000;
 
     if (!dead) continue;
 
     try {
-      conn.ws.terminate();
+      ws?.terminate();
     } catch {}
 
     connections.delete(id);
   }
 }, 5000);
 
-/**
- * ======================================================
- * HEARTBEAT PING
- * ======================================================
- */
-setInterval(() => {
+// ======================================================
+// HEARTBEAT PING
+// ======================================================
+const pingInterval = setInterval(() => {
   for (const conn of connections.values()) {
-    conn.ws.isAlive = false;
-    conn.ws.ping();
+    try {
+      conn.ws.isAlive = false;
+      conn.ws.ping();
+    } catch {}
   }
 }, 15000);
 
-/**
- * ======================================================
- * CONNECTION HANDLER
- * ======================================================
- */
+// ======================================================
+// CONNECTION HANDLER
+// ======================================================
 wss.on("connection", (ws) => {
-  const id = `${Date.now()}-${Math.random()}`;
+  const id = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
 
   ws.isAlive = true;
 
@@ -85,80 +140,139 @@ wss.on("connection", (ws) => {
 
   connections.set(id, conn);
 
+  // ---------------------------------------------------
+  // HEARTBEAT RESPONSE
+  // ---------------------------------------------------
   ws.on("pong", () => {
     ws.isAlive = true;
     conn.lastPing = Date.now();
   });
 
-  ws.on("message", async (msg) => {
+  // ---------------------------------------------------
+  // MESSAGE HANDLER
+  // ---------------------------------------------------
+  ws.on("message", async (raw) => {
     let data;
 
     try {
-      data = JSON.parse(msg.toString());
+      data = JSON.parse(raw.toString());
     } catch {
       return;
     }
 
+    if (!data?.type) return;
+
     conn.lastPing = Date.now();
 
-    /**
-     * CONNECT
-     */
+    // ===============================================
+    // DRIVER CONNECT
+    // ===============================================
     if (data.type === "connect") {
-      conn.driverId = data?.payload?.driverId;
+      conn.driverId = data?.payload?.driverId || null;
 
-      ws.send(
-        JSON.stringify({
-          type: "connected",
-          driverId: conn.driverId,
-        }),
-      );
+      safeSend(ws, {
+        type: "connected",
+        driverId: conn.driverId,
+      });
 
       return;
     }
 
-    /**
-     * GPS UPDATE (MULTI-SERVER SAFE)
-     */
+    // ===============================================
+    // GPS UPDATE
+    // ===============================================
     if (data.type === "gps_update") {
       if (!conn.driverId) return;
+
+      const p = data.payload || {};
+
+      const lat = Number(p.lat);
+      const lng = Number(p.lng);
+
+      if (Number.isNaN(lat) || Number.isNaN(lng)) {
+        return;
+      }
 
       const payload = {
         type: "driver_location_update",
         driverId: conn.driverId,
-        lat: data.payload?.lat,
-        lng: data.payload?.lng,
-        speed: data.payload?.speed || 0,
-        heading: data.payload?.heading || 0,
+        lat,
+        lng,
+        speed: Number(p.speed || 0),
+        heading: Number(p.heading || 0),
         ts: Date.now(),
       };
 
-      /**
-       * 1. Store latest state (Redis KV)
-       */
-      setValue(`driver:${conn.driverId}`, payload, 60).catch(() => {});
-
-      /**
-       * 2. LOCAL BROADCAST (same server clients)
-       */
-      for (const c of connections.values()) {
-        if (c.ws.readyState === WebSocket.OPEN) {
-          c.ws.send(JSON.stringify(payload));
+      // -------------------------------------------
+      // 1. REDIS CACHE
+      // -------------------------------------------
+      try {
+        if (redis?.set) {
+          await redis.set(`driver:${conn.driverId}`, JSON.stringify(payload), {
+            EX: 60,
+          });
         }
+      } catch (err) {
+        console.warn("Redis SET failed:", err?.message);
       }
 
-      /**
-       * 3. CROSS-SERVER BROADCAST (CRITICAL)
-       */
-      publish(CHANNELS.GPS, payload);
+      // -------------------------------------------
+      // 2. LOCAL BROADCAST
+      // -------------------------------------------
+      for (const c of connections.values()) {
+        safeSend(c.ws, payload);
+      }
+
+      // -------------------------------------------
+      // 3. CROSS SERVER PUBSUB
+      // -------------------------------------------
+      try {
+        await publish(CHANNELS.GPS, payload);
+      } catch (err) {
+        console.warn("Redis publish failed:", err?.message);
+      }
     }
   });
 
-  ws.on("close", () => {
-    connections.delete(id);
-  });
+  // ---------------------------------------------------
+  // CLEANUP
+  // ---------------------------------------------------
+  function destroyConnection() {
+    try {
+      ws.terminate();
+    } catch {}
 
-  ws.on("error", () => {
     connections.delete(id);
-  });
+  }
+
+  ws.on("close", destroyConnection);
+  ws.on("error", destroyConnection);
+});
+
+// ======================================================
+// GRACEFUL SHUTDOWN
+// ======================================================
+async function shutdown(signal) {
+  console.log(`🛑 ${signal} received`);
+
+  clearInterval(cleanupInterval);
+  clearInterval(pingInterval);
+
+  try {
+    wss.close();
+  } catch {}
+
+  process.exit(0);
+}
+
+process.on("SIGINT", () => shutdown("SIGINT"));
+
+process.on("SIGTERM", () => shutdown("SIGTERM"));
+
+process.on("uncaughtException", (err) => {
+  console.error("UNCAUGHT EXCEPTION:", err);
+});
+
+process.on("unhandledRejection", (reason) => {
+  console.error("UNHANDLED PROMISE:", reason);
 });

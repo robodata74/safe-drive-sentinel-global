@@ -4,14 +4,14 @@ const redisUrl = process.env.REDIS_URL;
 
 if (!redisUrl) {
   console.warn("⚠️ REDIS_URL missing — Redis disabled");
-
   module.exports = null;
   return;
 }
 
-const redisOptions = {
+const redis = new Redis(redisUrl, {
   lazyConnect: true,
   enableOfflineQueue: false,
+
   maxRetriesPerRequest: null,
   connectTimeout: 10000,
   commandTimeout: 5000,
@@ -28,14 +28,12 @@ const redisOptions = {
   reconnectOnError() {
     return true;
   },
-};
+});
 
-const redis = new Redis(redisUrl, redisOptions);
-
-// SAFE EVENT HANDLING (prevents crashes)
+// SAFE EVENTS (never crash server)
 redis.on("connect", () => console.log("🟢 Redis connecting..."));
 redis.on("ready", () => console.log("✅ Redis ready"));
-redis.on("error", (err) => console.error("🔴 Redis error:", err.message));
 redis.on("close", () => console.log("⚫ Redis closed"));
+redis.on("error", (err) => console.error("🔴 Redis error:", err.message));
 
 module.exports = redis;
