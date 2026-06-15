@@ -1,21 +1,12 @@
 import { createServerClient } from "@supabase/ssr";
 import { NextRequest, NextResponse } from "next/server";
 
-type CookieToSet = {
-  name: string;
-  value: string;
-  options?: {
-    path?: string;
-    domain?: string;
-    maxAge?: number;
-    secure?: boolean;
-    httpOnly?: boolean;
-    sameSite?: "lax" | "strict" | "none";
-  };
-};
-
 export async function middleware(req: NextRequest) {
-  let response = NextResponse.next();
+  let response = NextResponse.next({
+    request: {
+      headers: req.headers,
+    },
+  });
 
   const supabase = createServerClient(
     process.env.NEXT_PUBLIC_SUPABASE_URL!,
@@ -26,8 +17,8 @@ export async function middleware(req: NextRequest) {
           return req.cookies.getAll();
         },
 
-        setAll(cookiesToSet: CookieToSet[]) {
-          cookiesToSet.forEach(({ name, value, options }) => {
+        setAll(cookies) {
+          cookies.forEach(({ name, value, options }) => {
             response.cookies.set(name, value, options);
           });
         },
@@ -41,14 +32,21 @@ export async function middleware(req: NextRequest) {
 
   const pathname = req.nextUrl.pathname;
 
+  // Protected routes
   const protectedRoutes = ["/dashboard"];
 
   const isProtected = protectedRoutes.some((route) =>
     pathname.startsWith(route),
   );
 
+  // Redirect unauthenticated users
   if (isProtected && !user) {
-    return NextResponse.redirect(new URL("/auth/login", req.url));
+    const redirectUrl = new URL("/auth/login", req.url);
+
+    // Optional: preserve where user was going
+    redirectUrl.searchParams.set("redirectedFrom", pathname);
+
+    return NextResponse.redirect(redirectUrl);
   }
 
   return response;
